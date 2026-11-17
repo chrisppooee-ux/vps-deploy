@@ -7,13 +7,13 @@
 在 VPS 上用 root 执行：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/<你的用户名>/vps-deploy/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/chrisppooee-ux/vps-deploy/main/install.sh)
 ```
 
 或者从本地机器远程驱动（新机器只开了密码登录也能用）：
 
 ```bash
-ssh root@<新VPS的IP> 'bash <(curl -fsSL https://raw.githubusercontent.com/<你的用户名>/vps-deploy/main/install.sh)'
+ssh root@<新VPS的IP> 'bash <(curl -fsSL https://raw.githubusercontent.com/chrisppooee-ux/vps-deploy/main/install.sh)'
 ```
 
 跑完会打印一个订阅地址，复制到 Clash 里导入即可。
