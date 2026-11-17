@@ -443,10 +443,11 @@ chmod 755 "$SUB_ROOT" "${SUB_ROOT}/${SUB_TOKEN}"
 
 cat > "/etc/nginx/sites-available/${NGINX_SITE}" <<NGINX
 server {
-    listen 127.0.0.1:${SUB_PORT};
+    listen 0.0.0.0:${SUB_PORT};
     server_name _;
     root ${SUB_ROOT};
     autoindex off;
+    default_type text/plain;
     location = / { return 404; }
     location / { try_files \$uri =404; }
 }
@@ -455,7 +456,7 @@ ln -sf "/etc/nginx/sites-available/${NGINX_SITE}" "/etc/nginx/sites-enabled/${NG
 nginx -t >/dev/null 2>&1 || die "nginx 配置校验失败"
 systemctl enable nginx >/dev/null 2>&1
 systemctl restart nginx
-ok "nginx 监听 127.0.0.1:${SUB_PORT}"
+ok "nginx 监听 0.0.0.0:${SUB_PORT}（IP 直连可用，不依赖隧道）"
 
 cat > "$SUB_BUILDER" <<'PYSUB'
 #!/usr/bin/env python3
@@ -801,9 +802,9 @@ env SB_CONFIG="${SB_DIR}/config.json" XRAY_CONFIG="${XRAY_DIR}/config.json" \
     "$SUB_BUILDER" || warn "订阅首次生成失败（隧道可能还没就绪，10 分钟内会自动重试）"
 
 step "完成"
-python3 - "$CRED_FILE" "$SUB_ROOT" "$REALITY_PORT" "$HY2_PORT" "$TUIC_PORT" <<'PYSUM'
+python3 - "$CRED_FILE" "$SUB_ROOT" "$REALITY_PORT" "$HY2_PORT" "$TUIC_PORT" "$SUB_PORT" <<'PYSUM'
 import json, sys, os, re
-cred, sub_root, rp, hy2p, tuicp = sys.argv[1:6]
+cred, sub_root, rp, hy2p, tuicp, subp = sys.argv[1:7]
 d = json.load(open(cred))
 m = re.search(r"\bsrc (\d+\.\d+\.\d+\.\d+)",
               os.popen("ip -4 route get 1.1.1.1 2>/dev/null").read())
@@ -819,9 +820,11 @@ print("""
   凭据文件: %s  (含全部密钥，勿外传)
 """ % (ip, rp, d.get("reality_sni", "?"), hy2p, tuicp, cred))
 print("  订阅目录: %s/%s" % (sub_root, d["sub_token"]))
-print("  订阅地址（隧道域名见下方）:")
+print("  订阅地址 · 首选（IP 直连，不依赖 DNS/域名，任何网络都能导入）:")
+print("    http://%s:%s/%s/clash.yaml" % (ip, subp, d["sub_token"]))
+print("    http://%s:%s/%s/base64.txt" % (ip, subp, d["sub_token"]))
+print("  订阅地址 · 备用（Cloudflare 隧道，进程重启后域名会变）:")
 print("    https://<隧道域名>/%s/clash.yaml" % d["sub_token"])
-print("    https://<隧道域名>/%s/base64.txt" % d["sub_token"])
 print("""
   下一步：
     1) 打开 Clash 导入上面的 clash.yaml（手机可用 base64.txt）

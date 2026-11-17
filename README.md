@@ -29,7 +29,7 @@ ssh root@<新VPS的IP> 'bash <(curl -fsSL https://raw.githubusercontent.com/chri
 
 外加：
 
-- **订阅服务**：nginx + 定时任务，从服务端配置自动生成 `clash.yaml` 和 `base64.txt`，通过 Cloudflare 隧道对外提供 HTTPS 地址
+- **订阅服务**：nginx + 定时任务，从服务端配置自动生成 `clash.yaml` 和 `base64.txt`。对外提供两个入口：`http://<IP>:18890/<token>/clash.yaml`（直连 IP，稳定）和 Cloudflare 隧道的 HTTPS 地址（备用）
 - **系统调优**：BBR、16MB UDP 缓冲、文件句柄上限
 - **可选 SSH 加固**：`--harden` 打开公钥认证、关闭密码登录、fail2ban 白名单
 
@@ -74,6 +74,8 @@ ENABLE_TUNNEL=0 bash install.sh
 **REALITY 认证失败**——服务端 Xray 必须锁在 25.x。26.x 改了 REALITY 握手（引入 X25519MLKEM768 后量子混合密钥交换），mihomo 的 REALITY 客户端跟不上，表现是客户端日志 `REALITY Authentication: false`、连接超时。脚本默认装 `25.3.6`，别手动升级。
 
 **隧道域名会变**——Cloudflare quick tunnel 是临时的，隧道进程重启后域名就换。换完执行一次 `sub-build.py` 会重写订阅内容，但订阅 URL 本身变了，需要重新分发。想要固定域名，得用 Cloudflare 账号建命名隧道。
+
+**`trycloudflare.com` 在国内解析不了**——所以订阅不能只靠隧道。客户端导入订阅时通常还没连上任何节点，是**直连**去拉 `clash.yaml` 的；而 `*.trycloudflare.com` 在国内 DNS 被污染，结果就是「导入失败」。这是个死循环：要拉订阅得先有代理，要有代理得先拉订阅。因此 nginx 额外监听 `0.0.0.0:18890`，用 IP 直连地址导入，全程不碰 DNS。代价是该入口是明文 HTTP，token 在路径里（40 位十六进制，不可爆破），介意的话导入完可以把隧道地址当日常用。
 
 **自签证书**——HY2 和 TUIC 用的是脚本现场生成的自签证书，客户端配置里 `skip-cert-verify: true`，属于预期行为。
 
