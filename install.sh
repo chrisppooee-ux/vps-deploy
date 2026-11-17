@@ -462,7 +462,7 @@ cat > "$SUB_BUILDER" <<'PYSUB'
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """从服务端实际配置生成订阅（唯一事实来源，杜绝手工复制漂移）"""
-import base64, glob, json, os, re, subprocess, urllib.parse
+import base64, glob, json, os, re, subprocess, time, urllib.parse
 
 SUB_ROOT = os.environ.get("SUB_ROOT", "/var/www/sub")
 HY2_PORT = int(os.environ.get("HY2_PORT", 8443))
@@ -470,12 +470,14 @@ TUIC_PORT = int(os.environ.get("TUIC_PORT", 8444))
 REALITY_PORT = int(os.environ.get("REALITY_PORT", 443))
 CF_PORT = 443
 HY2_SNI = os.environ.get("HY2_SNI", "www.bing.com")
+SUB_PORT = int(os.environ.get("SUB_PORT", 18890))
 
 G_SEL = "🚀 节点选择"; G_AUTO = "♻️ 自动选择"; G_MAN = "🎯 手动切换"
 G_AI = "🤖 AI 专线"; G_MEDIA = "📺 流媒体"; G_TG = "📲 电报"
 G_MS = "🔧 微软服务"; G_AD = "🛑 广告拦截"; G_FINAL = "🐟 漏网之鱼"
 N_REALITY = "🇺🇸 REALITY-443"; N_HY2 = "🇺🇸 HY2-8443"
 N_TUIC = "🇺🇸 TUIC-8444"; N_CF = "☁️ CF-VLESS"
+N_CF_IP = "☁️ CF-优选"
 
 
 def sh(cmd):
@@ -497,6 +499,41 @@ def tunnel_domain(port):
     o = sh("curl -s --max-time 6 http://127.0.0.1:%d/quicktunnel" % port)
     m = re.search(r'"hostname":"([^"]+)"', o)
     return m.group(1) if m else None
+
+
+_EDGE_CACHE = {}
+
+
+def edge_ips(dom, n=3):
+    """服务端把隧道域名解析成 CF 边缘 IP，写死进节点。
+
+    客户端因此不需要解析 *.trycloudflare.com —— DNS 被污染、DNS 挂了、
+    甚至客户端 DNS 配置错乱都不影响兜底节点可用。
+    """
+    if not dom:
+        return []
+    if dom in _EDGE_CACHE:
+        return _EDGE_CACHE[dom]
+    ips = []
+    o = sh("getent ahostsv4 %s 2>/dev/null | awk '{print $1}'" % dom)
+    ips = [x for x in o.split() if re.match(r"^\d+\.\d+\.\d+\.\d+$", x)]
+    if not ips:
+        o = sh("curl -s --max-time 5 -H 'accept: application/dns-json' "
+               "'https://1.1.1.1/dns-query?name=%s&type=A'" % dom)
+        ips = re.findall(r'"data":"(\d+\.\d+\.\d+\.\d+)"', o)
+    seen, out = set(), []
+    for x in ips:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    _EDGE_CACHE[dom] = out[:n]
+    return _EDGE_CACHE[dom]
+
+
+def cf_names(dom):
+    if not dom:
+        return []
+    return [N_CF] + ["%s%d" % (N_CF_IP, k) for k in range(1, len(edge_ips(dom)) + 1)]
 
 
 def load_creds():
@@ -542,12 +579,19 @@ def proxies(c, dom, ip):
         p.append({"name": N_CF, "type": "vless", "server": dom, "port": CF_PORT,
                   "uuid": c["cf_uuid"], "tls": True, "servername": dom, "network": "ws",
                   "ws-opts": {"path": c["cf_path"], "headers": {"Host": dom}}, "udp": True})
+        for k, eip in enumerate(edge_ips(dom), 1):
+            p.append({"name": "%s%d" % (N_CF_IP, k), "type": "vless", "server": eip,
+                      "port": CF_PORT, "uuid": c["cf_uuid"], "tls": True,
+                      "servername": dom, "network": "ws",
+                      "ws-opts": {"path": c["cf_path"], "headers": {"Host": dom}},
+                      "udp": True})
     return p
 
 
-def groups(has_cf):
-    nodes = [N_REALITY, N_HY2, N_TUIC] + ([N_CF] if has_cf else [])
-    sel = [G_AUTO, G_MAN, N_REALITY] + ([N_CF] if has_cf else []) + ["DIRECT"]
+def groups(dom):
+    cf = cf_names(dom)
+    nodes = [N_REALITY, N_HY2, N_TUIC] + cf
+    sel = [G_AUTO, G_MAN, N_REALITY] + cf + ["DIRECT"]
     return [
         {"name": G_SEL, "type": "select", "proxies": sel},
         {"name": G_AUTO, "type": "url-test", "url": "http://www.gstatic.com/generate_204",
@@ -639,11 +683,10 @@ def sniffer():
 
 
 def config(c, dom, ip):
-    has_cf = bool(dom)
     return {"mode": "rule", "mixed-port": 7890, "allow-lan": False, "log-level": "warning",
       "ipv6": False, "unified-delay": True, "tcp-concurrent": True, "find-process-mode": "strict",
       "sniffer": sniffer(), "dns": dns(),
-      "proxies": proxies(c, dom, ip), "proxy-groups": groups(has_cf),
+      "proxies": proxies(c, dom, ip), "proxy-groups": groups(dom),
       "rule-providers": {n: {"type": "http", "behavior": b,
           "url": "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/"+f,
           "path": "./ruleset/%s.yaml" % n, "interval": 86400} for n,b,f in RULE_SETS},
@@ -663,6 +706,9 @@ def uris(c, dom, ip):
     if dom:
         out.append("vless://%s@%s:%d/?encryption=none&security=tls&sni=%s&type=ws&host=%s&path=%s#%s"
                    % (c["cf_uuid"], dom, CF_PORT, dom, dom, q(c["cf_path"], safe=""), N_CF))
+        for k, eip in enumerate(edge_ips(dom), 1):
+            out.append("vless://%s@%s:%d/?encryption=none&security=tls&sni=%s&type=ws&host=%s&path=%s#%s%d"
+                       % (c["cf_uuid"], eip, CF_PORT, dom, dom, q(c["cf_path"], safe=""), N_CF_IP, k))
     return out
 
 
@@ -715,8 +761,28 @@ def main():
     if not dirs:
         raise SystemExit("找不到订阅目录 %s" % SUB_ROOT)
     for d in dirs:
+        tok = os.path.basename(d)
         open(os.path.join(d, "clash.yaml"), "w", encoding="utf-8").write(text)
         open(os.path.join(d, "base64.txt"), "w", encoding="utf-8").write(b64)
+        info = ["# 订阅信息（自动生成，每 10 分钟刷新）",
+                "更新时间: %s UTC" % time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+                "服务器: %s" % ip,
+                "隧道域名: %s" % (dom or "(隧道未就绪)"),
+                "",
+                "## 直连订阅 · 不依赖任何域名，永远可用",
+                "http://%s:%d/%s/clash.yaml" % (ip, SUB_PORT, tok),
+                "http://%s:%d/%s/base64.txt" % (ip, SUB_PORT, tok),
+                "",
+                "## 隧道订阅 · IP 被封时的兜底入口"]
+        if dom:
+            info += ["https://%s/%s/clash.yaml" % (dom, tok),
+                     "https://%s/%s/base64.txt" % (dom, tok),
+                     "",
+                     "## 兜底节点已写死的 CF 边缘 IP（客户端无需做 DNS 解析）",
+                     "  ".join(edge_ips(dom)) or "(解析失败，本次仅下发域名节点)"]
+        else:
+            info.append("(隧道未就绪)")
+        open(os.path.join(d, "current.txt"), "w", encoding="utf-8").write("\n".join(info) + "\n")
     print("ip=%s domain=%s 节点=%d 目录=%d" % (ip, dom or "(无隧道)", len(uris(c, dom, ip)), len(dirs)))
 
 
@@ -739,6 +805,7 @@ Environment=TUIC_PORT=${TUIC_PORT}
 Environment=REALITY_PORT=${REALITY_PORT}
 Environment=HY2_SNI=${HY2_SNI}
 Environment=CF_VLESS_METRICS=${CF_VLESS_METRICS}
+Environment=SUB_PORT=${SUB_PORT}
 ExecStart=${SUB_BUILDER}
 UNIT
 
@@ -798,7 +865,7 @@ step "生成订阅"
 env SB_CONFIG="${SB_DIR}/config.json" XRAY_CONFIG="${XRAY_DIR}/config.json" \
     SUB_ROOT="${SUB_ROOT}" HY2_PORT="${HY2_PORT}" TUIC_PORT="${TUIC_PORT}" \
     REALITY_PORT="${REALITY_PORT}" HY2_SNI="${HY2_SNI}" \
-    CF_VLESS_METRICS="${CF_VLESS_METRICS}" \
+    CF_VLESS_METRICS="${CF_VLESS_METRICS}" SUB_PORT="${SUB_PORT}" \
     "$SUB_BUILDER" || warn "订阅首次生成失败（隧道可能还没就绪，10 分钟内会自动重试）"
 
 step "完成"

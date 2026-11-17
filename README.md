@@ -25,7 +25,7 @@ ssh root@<新VPS的IP> 'bash <(curl -fsSL https://raw.githubusercontent.com/chri
 | VLESS-REALITY | 443/TCP | XTLS-Vision，伪装访问 `www.cloudflare.com`，抗封锁最强 |
 | Hysteria2 | 8443/UDP | salamander 混淆，弱网表现好 |
 | TUIC v5 | 8444/UDP | BBR 拥塞控制 |
-| VLESS-WS | 443/TCP（Cloudflare） | 走 CDN，IP 被墙时的兜底通道 |
+| VLESS-WS | 443/TCP（Cloudflare） | 走 CDN，IP 被墙时的兜底通道，共下发 3 个：域名版 + 2 个写死 CF 边缘 IP 的版本 |
 
 外加：
 
@@ -73,9 +73,13 @@ ENABLE_TUNNEL=0 bash install.sh
 
 **REALITY 认证失败**——服务端 Xray 必须锁在 25.x。26.x 改了 REALITY 握手（引入 X25519MLKEM768 后量子混合密钥交换），mihomo 的 REALITY 客户端跟不上，表现是客户端日志 `REALITY Authentication: false`、连接超时。脚本默认装 `25.3.6`，别手动升级。
 
-**隧道域名会变**——Cloudflare quick tunnel 是临时的，隧道进程重启后域名就换。换完执行一次 `sub-build.py` 会重写订阅内容，但订阅 URL 本身变了，需要重新分发。想要固定域名，得用 Cloudflare 账号建命名隧道。
+**隧道域名会变，旧域名直接 NXDOMAIN**——Cloudflare quick tunnel 是临时的，隧道进程一重启域名就换，旧域名立刻变成 `NXDOMAIN`。拿旧链接去导入会失败，报错容易被误读成"临时域名不可用"。`sub-build.py` 每 10 分钟从 `cloudflared` 的 metrics 接口读取当前域名重写订阅，所以**订阅内容**永远是最新的；问题只在"订阅 URL 本身"会不会变——这也是订阅默认走 IP 直连的原因。
 
-**`trycloudflare.com` 在国内解析不了**——所以订阅不能只靠隧道。客户端导入订阅时通常还没连上任何节点，是**直连**去拉 `clash.yaml` 的；而 `*.trycloudflare.com` 在国内 DNS 被污染，结果就是「导入失败」。这是个死循环：要拉订阅得先有代理，要有代理得先拉订阅。因此 nginx 额外监听 `0.0.0.0:18890`，用 IP 直连地址导入，全程不碰 DNS。代价是该入口是明文 HTTP，token 在路径里（40 位十六进制，不可爆破），介意的话导入完可以把隧道地址当日常用。
+**兜底节点不能依赖客户端 DNS**——`☁️ CF-VLESS` 的 `server` 是隧道域名，客户端必须自己解析它；如果客户端 DNS 配置有问题（fake-ip、解析器被污染、离线），兜底节点就先于隧道挂掉，等于没有兜底。所以生成器会在服务端把域名解析成 CF 边缘 IP，额外下发 `☁️ CF-优选1/2`：`server` 写 IP，`servername` 和 WS 的 `Host` 仍是域名。客户端不做任何解析，TLS 的 SNI 和 Host 头依然正确，Cloudflare 照样按域名路由。边缘 IP 每次重生成时重新解析，不会写死过期。
+
+**实测数据（2026-11，广东电信）**：`trycloudflare.com` 在国内**能**正常解析（腾讯/阿里/114 的 UDP 53 与 DoH 都返回 `104.16.230.132` / `104.16.231.132`），直连 CF 边缘 TCP 186ms、TLS 握手成功、WS 握手返回 `101 Switching Protocols`。所以这条路是通的，别再去怀疑 DNS 污染。
+
+**`trycloudflare.com` 与订阅导入**——客户端导入订阅时通常还没连上任何节点，是**直连**去拉 `clash.yaml` 的。所以 nginx 监听 `0.0.0.0:18890`，用 IP 直连地址导入，全程不碰 DNS。代价是该入口是明文 HTTP，token 在路径里（40 位十六进制，不可爆破）。同一个目录下还会生成 `current.txt`，从 IP 直连地址随时能查到当前的隧道域名和最新订阅链接——隧道域名变了也不至于失联。
 
 **自签证书**——HY2 和 TUIC 用的是脚本现场生成的自签证书，客户端配置里 `skip-cert-verify: true`，属于预期行为。
 
