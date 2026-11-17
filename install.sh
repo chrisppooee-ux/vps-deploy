@@ -58,6 +58,26 @@ ok()   { echo "    ${C_G}✓${C_R} $*"; }
 warn() { echo "    ${C_Y}!${C_R} $*"; }
 die()  { echo "${C_E}✗ $*${C_R}" >&2; exit 1; }
 
+# ---------------------------------------------------------------- 用法
+usage() {
+  cat <<'USAGE'
+ vps-deploy · 一键部署代理栈
+ REALITY(443/TCP) + Hysteria2(8443/UDP) + TUIC(8444/UDP) + CF-VLESS(CDN 兜底)
+ 附带：订阅服务、BBR 调优、可选 SSH 加固
+
+ 用法：
+   bash install.sh                     # 完整安装
+   bash install.sh --harden            # 完整安装 + SSH 加固
+   bash install.sh --no-tunnel         # 不建 Cloudflare 隧道（CF-VLESS 跳过）
+   bash install.sh --uninstall         # 卸载预览
+   bash install.sh --uninstall --yes   # 确认卸载
+
+ 幂等：重复执行会复用 /root/vps-nodes.json 里已有的凭据，不会把设备踢下线
+ 支持：Debian 11/12 · Ubuntu 20.04/22.04/24.04 · amd64 / arm64
+ 所有路径/端口/单元名均可用环境变量覆盖（见脚本内「可调参数」）
+USAGE
+}
+
 # ---------------------------------------------------------------- 参数解析
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -65,7 +85,7 @@ while [ $# -gt 0 ]; do
     --no-tunnel) ENABLE_TUNNEL=0 ;;
     --uninstall) DO_UNINSTALL=1 ;;
     --yes|-y)    DO_YES=1 ;;
-    -h|--help)   sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)   usage; exit 0 ;;
     *) die "未知参数: $1（用 --help 查看用法）" ;;
   esac
   shift
